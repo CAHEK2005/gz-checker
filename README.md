@@ -21,6 +21,17 @@ cp .env.example .env
 docker compose up --build
 ```
 
+## Bot UI
+
+The primary flow is button-based. Use `/start` or `/menu`, then work through inline buttons:
+
+- `Добавить направление`
+- `Мои направления`
+- `Статус`
+- per-referral actions: `Режим`, `Окно`, `Включить`, `Выключить`
+
+The bot also registers Telegram menu commands as quick entry points to the same inline screens.
+
 ## Bot Commands
 
 - `/start` - create a profile.

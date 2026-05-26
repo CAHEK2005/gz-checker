@@ -1,6 +1,5 @@
 import logging
 import threading
-import time
 from datetime import datetime
 from typing import Protocol
 
@@ -93,6 +92,7 @@ class ReferralScheduler:
         if not referral.selected_doctor_id:
             self.repo.update_last_status(referral.id, "Не выбран врач по направлению")
             return
+
         client = self.client_factory()
         info = client.get_referral(referral.referral_number, referral.last_name)
         self.repo.update_referral_from_info(referral.id, info)
