@@ -61,11 +61,15 @@ class ReferralScheduler:
         bot: Notifier,
         interval_secs: int,
         client_factory=GorzdravClient,
+        retry_sleep=None,
+        retry_jitter=None,
     ):
         self.repo = repo
         self.bot = bot
         self.interval_secs = interval_secs
         self.client_factory = client_factory
+        self.retry_sleep = retry_sleep
+        self.retry_jitter = retry_jitter
         self._stop_event = threading.Event()
 
     def start_background(self) -> threading.Thread:
@@ -85,6 +89,22 @@ class ReferralScheduler:
         for referral in self.repo.list_active_referrals():
             try:
                 self.check_referral(referral)
+            except GorzdravTransientError as exc:
+                self.repo.update_last_status(
+                    referral.id,
+                    f"Временная ошибка проверки направления: {exc.message}",
+                )
+                logger.info("Transient referral check error for id=%s: %s", referral.id, exc.message)
+            except GorzdravPermanentError as exc:
+                if exc.error_code == 676:
+                    self.repo.deactivate_referral(
+                        referral.id,
+                        f"Направление недействительно: {exc.message}",
+                    )
+                    logger.info("Referral id=%s deactivated: %s", referral.id, exc.message)
+                else:
+                    self.repo.update_last_status(referral.id, f"Проверка направления: {exc.message}")
+                    logger.info("Referral check returned no available schedule for id=%s: %s", referral.id, exc.message)
             except Exception:
                 logger.exception("Referral check failed for id=%s", referral.id)
 
@@ -187,13 +207,10 @@ class ReferralScheduler:
                 client.create_appointment,
                 payload,
                 on_attempt=on_attempt,
+                **self._retry_kwargs(),
             )
         except GorzdravTransientError as exc:
             self.repo.update_last_status(referral.id, f"Временная ошибка записи: {exc.message}")
-            self.bot.send_message(
-                referral.user_id,
-                f"Не удалось записаться после 6 попыток: {exc.message}\nМониторинг продолжен.",
-            )
             return
         except GorzdravPermanentError as exc:
             self.repo.deactivate_referral(referral.id, f"Постоянная ошибка записи: {exc.message}")
@@ -213,3 +230,11 @@ class ReferralScheduler:
             f"Запись выполнена: {appointment.visitStart:%d.%m.%Y %H:%M}\n"
             f"Направление: {referral.referral_number}",
         )
+
+    def _retry_kwargs(self) -> dict:
+        kwargs = {}
+        if self.retry_sleep is not None:
+            kwargs["sleep"] = self.retry_sleep
+        if self.retry_jitter is not None:
+            kwargs["jitter"] = self.retry_jitter
+        return kwargs
