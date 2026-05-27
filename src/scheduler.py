@@ -10,7 +10,7 @@ from gorzdrav.models import ApiAppointment, ReferralInfo
 from services.booking import (
     BookingMode,
     TimeWindow,
-    book_with_retry,
+    book_with_parallel_retry,
     build_appointment_request,
     select_appointment,
 )
@@ -203,7 +203,7 @@ class ReferralScheduler:
             self.repo.log_booking_attempt(referral.id, appointment.id, attempt, status, error_code, message)
 
         try:
-            book_with_retry(
+            book_with_parallel_retry(
                 client.create_appointment,
                 payload,
                 on_attempt=on_attempt,
@@ -236,5 +236,5 @@ class ReferralScheduler:
         if self.retry_sleep is not None:
             kwargs["sleep"] = self.retry_sleep
         if self.retry_jitter is not None:
-            kwargs["jitter"] = self.retry_jitter
+            kwargs["interval"] = self.retry_jitter
         return kwargs

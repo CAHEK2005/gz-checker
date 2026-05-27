@@ -1,5 +1,6 @@
 import random
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from datetime import datetime, time as dtime
 from enum import Enum
@@ -146,3 +147,70 @@ def book_with_retry(
             sleep(delay)
     assert last_error is not None
     raise last_error
+
+
+def book_with_parallel_retry(
+    create: Callable[[object], bool],
+    payload: object,
+    *,
+    attempts: int = 6,
+    sleep: Callable[[float], None] = time.sleep,
+    interval: Callable[[], float] = lambda: random.uniform(3, 5),
+    on_attempt: Callable[[int, str, int | None, str | None], None] | None = None,
+) -> bool:
+    futures: dict[Future, int] = {}
+    last_transient: GorzdravTransientError | None = None
+
+    def submit(executor: ThreadPoolExecutor, attempt_number: int) -> None:
+        futures[executor.submit(create, payload)] = attempt_number
+
+    def consume_done(done: set[Future], *, final: bool = False) -> bool | None:
+        nonlocal last_transient
+        for future in done:
+            attempt_number = futures.pop(future)
+            try:
+                result = future.result()
+            except GorzdravPermanentError as exc:
+                if on_attempt:
+                    on_attempt(attempt_number, "permanent_error", exc.error_code, exc.message)
+                raise
+            except GorzdravTransientError as exc:
+                last_transient = exc
+                if on_attempt:
+                    on_attempt(
+                        attempt_number,
+                        "failed" if final else "retry",
+                        exc.error_code,
+                        exc.message,
+                    )
+                continue
+            if on_attempt:
+                on_attempt(attempt_number, "success", None, None)
+            return bool(result)
+        return None
+
+    with ThreadPoolExecutor(max_workers=attempts) as executor:
+        for attempt_number in range(1, attempts + 1):
+            submit(executor, attempt_number)
+
+            done, _pending = wait(futures.keys(), timeout=0.01, return_when=FIRST_COMPLETED)
+            result = consume_done(done)
+            if result is not None:
+                return result
+
+            if attempt_number < attempts:
+                sleep(interval())
+                done, _pending = wait(futures.keys(), timeout=0.01, return_when=FIRST_COMPLETED)
+                result = consume_done(done)
+                if result is not None:
+                    return result
+
+        while futures:
+            done, _pending = wait(futures.keys(), return_when=FIRST_COMPLETED)
+            result = consume_done(done, final=len(done) == len(futures))
+            if result is not None:
+                return result
+
+    if last_transient is not None:
+        raise last_transient
+    raise GorzdravTransientError("No booking attempts completed")

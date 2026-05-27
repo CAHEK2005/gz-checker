@@ -8,6 +8,7 @@ from services.booking import (
     BookingMode,
     TimeWindow,
     book_with_retry,
+    book_with_parallel_retry,
     build_appointment_request,
     parse_time_window,
     select_appointment,
@@ -111,6 +112,51 @@ def test_booking_does_not_retry_permanent_error():
         book_with_retry(create, object(), sleep=lambda _delay: None, jitter=lambda: 0)
 
     assert attempts == [1]
+
+
+def test_parallel_booking_starts_attempts_on_3_to_5_second_ticks_without_waiting_for_previous_response():
+    started_attempts = []
+    slept = []
+
+    def create(_payload):
+        started_attempts.append(len(started_attempts) + 1)
+        raise GorzdravTransientError("temporary", error_code=616)
+
+    def sleep(delay):
+        slept.append(delay)
+
+    intervals = iter([3, 4, 5, 3, 4])
+
+    with pytest.raises(GorzdravTransientError):
+        book_with_parallel_retry(
+            create,
+            object(),
+            sleep=sleep,
+            interval=lambda: next(intervals),
+        )
+
+    assert started_attempts == [1, 2, 3, 4, 5, 6]
+    assert slept == [3, 4, 5, 3, 4]
+
+
+def test_parallel_booking_returns_on_first_success_and_does_not_send_more_attempts():
+    started_attempts = []
+
+    def create(_payload):
+        started_attempts.append(len(started_attempts) + 1)
+        if len(started_attempts) == 2:
+            return True
+        raise GorzdravTransientError("temporary", error_code=616)
+
+    result = book_with_parallel_retry(
+        create,
+        object(),
+        sleep=lambda _delay: None,
+        interval=lambda: 3,
+    )
+
+    assert result is True
+    assert started_attempts == [1, 2]
 
 
 def test_build_appointment_request_uses_referral_patient_and_slot_data(referral_fixture):
